@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: ecotrack
+          POSTGRES_PASSWORD: ecotrack_dev_pw
+          POSTGRES_DB: ecotrack_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ecotrack -d ecotrack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install ruff mypy
+
+      - name: Lint (ruff)
+        run: ruff check app tests || true # non-blocking for MVP; tighten over time
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt || true
+          # Non-blocking: see docs/security.md for the one known finding
+          # (ecdsa/PYSEC-2026-1325, a timing side-channel in ECDSA signing) —
+          # investigated and confirmed not exploitable in this codebase,
+          # since app/security/auth.py exclusively uses HS256 (HMAC, not
+          # ECDSA) for JWTs; ecdsa is present only as an unused transitive
+          # dependency of python-jose. Kept non-blocking rather than
+          # silenced so *new* findings are still visible in CI output.
+
+      - name: Enable PostGIS on test DB
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=ecotrack_dev_pw psql -h localhost -U ecotrack -d ecotrack_test -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      - name: Run backend tests
+        env:
+          DATABASE_URL: postgresql+psycopg2://ecotrack:ecotrack_dev_pw@localhost:5432/ecotrack_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-test-secret-key
+          PYTHONPATH: .
+        run: pytest tests/ -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Dependency vulnerability scan (npm audit)
+        run: npm audit --audit-level=high || true
+        # Non-blocking for the same reason as pip-audit above — visible in
+        # CI output, doesn't block merges on transitive-dependency findings
+        # that need manual triage. Currently 0 vulnerabilities (see
+        # docs/security.md).
+
+      - name: Unit and component tests (Jest)
+        run: npm test -- --ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+        run: npm run build
+
+  e2e:
+    # Runs only after the fast unit/lint/build checks in both jobs above
+    # pass — E2E is the slowest, most resource-heavy check (a real browser,
+    # a real Postgres+PostGIS+Redis stack, both the backend and frontend
+    # actually running), so there's no point paying that cost on a change
+    # that already fails a cheaper check.
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: ecotrack
+          POSTGRES_PASSWORD: ecotrack_dev_pw
+          POSTGRES_DB: ecotrack_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ecotrack -d ecotrack_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://ecotrack:ecotrack_dev_pw@localhost:5432/ecotrack_e2e
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-e2e-secret-key
+      APP_ENV: testing # disables the rate limiter for this run — the same
+      # mechanism (and exact env var) already used by both the pytest suite
+      # and local E2E runs, not a new special case invented for CI. See
+      # e2e/README.md.
+      PYTHONPATH: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      # webkit2gtk-driver + xvfb are real .deb packages from Ubuntu's own
+      # archive — this is the whole reason E2E tests are possible at all in
+      # this project's original sandbox, where Playwright/Cypress's
+      # CDN-hosted browser downloads were blocked. See e2e/README.md for the
+      # full explanation. GitHub-hosted runners have normal internet access,
+      # so Playwright would also work there — but this keeps local dev and
+      # CI using the identical toolchain, rather than one thing locally and
+      # another in CI.
+      - name: Install WebKitGTK driver and virtual display
+        run: sudo apt-get update && sudo apt-get install -y webkit2gtk-driver xvfb
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install selenium requests pytest
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Enable PostGIS on the E2E database
+        run: |
+          sudo apt-get install -y postgresql-client
+          PGPASSWORD=ecotrack_dev_pw psql -h localhost -U ecotrack -d ecotrack_e2e -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      - name: Run database migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Seed demo data (required — E2E tests log in as seeded accounts)
+        working-directory: backend
+        run: python3 scripts/seed.py
+
+      - name: Start backend server
+        working-directory: backend
+        run: |
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/api/v1/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/api/v1/health || (cat /tmp/backend.log && exit 1)
+
+      - name: Build and start frontend server
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+        run: |
+          npm run build
+          nohup npm run start -- -p 3000 > /tmp/frontend.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/ && break
+            sleep 1
+          done
+          curl -sf http://localhost:3000/ || (cat /tmp/frontend.log && exit 1)
+
+      - name: Start virtual display
+        run: |
+          Xvfb :99 -screen 0 1280x1024x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Run E2E tests
+        working-directory: e2e
+        run: pytest . -v
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-server-logs
+          path: |
+            /tmp/backend.log
+            /tmp/frontend.log
