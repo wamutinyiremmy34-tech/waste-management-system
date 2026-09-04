@@ -10,9 +10,9 @@ export default function OrganizationPage() {
   const router = useRouter();
 
   const [profile, setProfile] = useState<{ name: string; org_type: string } | null>(null);
-  const [analytics, setAnalytics] = useState<{ total_waste_kg: number; by_category_kg: Record<string, number> } | null>(
-    null
-  );
+  const [analytics, setAnalytics] = useState<{ total_waste_kg: number; by_category_kg: Record<string, number> } | null>(null);
+  const [locations, setLocations] = useState<{ id: string; label: string; address_text: string | null }[]>([]);
+  const [schedules, setSchedules] = useState<{ id: string; frequency: string; waste_category: string; address_text: string | null; next_run_date: string | null; is_active: boolean }[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,11 +37,15 @@ export default function OrganizationPage() {
       api.myOrganizationProfile(token, user.organization_id),
       api.organizationWasteAnalytics(token, user.organization_id),
       api.listOrganizationStaff(token, user.organization_id),
+      api.listOrganizationLocations(token, user.organization_id).catch(() => []),
+      api.myRecurringSchedules(token).catch(() => []),
     ])
-      .then(([p, a, s]) => {
+      .then(([p, a, s, locs, scheds]) => {
         setProfile(p);
         setAnalytics(a);
         setStaff(s);
+        setLocations(locs);
+        setSchedules(scheds);
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load organization data."))
       .finally(() => setDataLoading(false));
@@ -333,6 +337,51 @@ export default function OrganizationPage() {
           Recurring collection-schedule management from the organization dashboard is not yet built
           — available via the API (<code>/api/v1/recurring-schedules</code>) and interactive docs at{" "}
           <code>/docs</code> in the meantime.
+        </div>
+
+        {/* Locations list — now that the API endpoint exists */}
+        {locations.length > 0 && (
+          <div className="mt-8">
+            <h2 className="mb-3 text-lg font-semibold text-stone-900">Branch locations</h2>
+            <div className="space-y-2">
+              {locations.map((loc) => (
+                <div key={loc.id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-white p-3">
+                  <div>
+                    <p className="text-sm font-medium text-stone-900">{loc.label}</p>
+                    {loc.address_text && <p className="text-xs text-stone-500">{loc.address_text}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recurring schedules */}
+        <div className="mt-8">
+          <h2 className="mb-3 text-lg font-semibold text-stone-900">Recurring collection schedules</h2>
+          {schedules.length === 0 && !dataLoading && (
+            <p className="rounded-lg border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
+              No recurring schedules set up. Use the &ldquo;Recurring pickups&rdquo; page to create one.
+            </p>
+          )}
+          <div className="space-y-2">
+            {schedules.map((s) => (
+              <div key={s.id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-white p-3">
+                <div>
+                  <p className="text-sm font-medium text-stone-900">
+                    {s.frequency} · {s.waste_category}
+                  </p>
+                  {s.address_text && <p className="text-xs text-stone-500">{s.address_text}</p>}
+                  {s.next_run_date && (
+                    <p className="text-xs text-stone-400">Next: {s.next_run_date}</p>
+                  )}
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${s.is_active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-600"}`}>
+                  {s.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </main>

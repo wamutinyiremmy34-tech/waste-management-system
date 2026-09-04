@@ -41,7 +41,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://ecotrack:ecotrack_dev_pw@db:5432/ecotrack_dev
       REDIS_URL: redis://redis:6379/0
-      SEED_ON_START: "true"
+      # SEED_ON_START is intentionally NOT set here — it defaults to false.
+      # To seed demo data for local development, either:
+      #   a) Set SEED_ON_START=true in backend/.env, OR
+      #   b) Run manually: docker compose exec backend python3 scripts/seed.py
+      # Never set SEED_ON_START=true in a production environment — the seed
+      # script creates demo accounts with known credentials.
     depends_on:
       db:
         condition: service_healthy
@@ -51,6 +56,12 @@ services:
       - "8000:8000"
     volumes:
       - ecotrack_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
   frontend:
     build:
@@ -61,7 +72,8 @@ services:
     container_name: ecotrack_frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "3000:3000"
 

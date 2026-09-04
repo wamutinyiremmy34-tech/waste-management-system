@@ -1,0 +1,4 @@
+# EcoTrack is a private operational platform, not a public website.
+# Search engines should not index it.
+User-agent: *
+Disallow: /

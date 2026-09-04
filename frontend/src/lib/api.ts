@@ -10,11 +10,42 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Attempts to refresh the access token using the stored refresh token.
+ * Returns the new access token on success, or null if refresh fails
+ * (expired, revoked, or no refresh token stored). On failure, clears
+ * both tokens from localStorage so the user is cleanly logged out.
+ */
+async function tryRefreshToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const refreshToken = localStorage.getItem("ecotrack_refresh_token");
+  if (!refreshToken) return null;
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) {
+      localStorage.removeItem("ecotrack_token");
+      localStorage.removeItem("ecotrack_refresh_token");
+      return null;
+    }
+    const data = await res.json();
+    localStorage.setItem("ecotrack_token", data.access_token);
+    localStorage.setItem("ecotrack_refresh_token", data.refresh_token);
+    return data.access_token as string;
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(
   path: string,
-  options: RequestInit & { token?: string | null } = {}
+  options: RequestInit & { token?: string | null; _retried?: boolean } = {}
 ): Promise<T> {
-  const { token, headers, ...rest } = options;
+  const { token, headers, _retried, ...rest } = options;
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
     headers: {
@@ -23,6 +54,17 @@ async function request<T>(
       ...headers,
     },
   });
+
+  // Auto-refresh on 401: attempt one token refresh and retry the original
+  // request. If the refresh also fails (or this is already a retry), throw
+  // so the caller can handle the unauthenticated state (e.g. redirect to login).
+  if (res.status === 401 && !_retried && token) {
+    const newToken = await tryRefreshToken();
+    if (newToken) {
+      return request<T>(path, { ...options, token: newToken, _retried: true });
+    }
+    // Refresh failed — fall through to throw the 401 below.
+  }
 
   if (!res.ok) {
     let detail = res.statusText;
@@ -361,4 +403,166 @@ export const api = {
 
   pointsBalance: (token: string) =>
     request<{ points_balance: number }>("/rewards/balance", { token }),
+
+  // ---------------------------------------------------------------------------
+  // Phase 2 — Operations intelligence
+  // ---------------------------------------------------------------------------
+
+  hotspots: (token: string, epsMeter?: number, minPoints?: number) => {
+    const params = new URLSearchParams();
+    if (epsMeter) params.set("eps_meters", String(epsMeter));
+    if (minPoints) params.set("min_points", String(minPoints));
+    const qs = params.toString();
+    return request<{
+      hotspots: { cluster_id: number; complaint_count: number; latitude: number; longitude: number }[];
+      total_clusters: number;
+      algorithm: string;
+    }>(`/operations/hotspots${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  environmentalImpact: (token: string) =>
+    request<{
+      total_waste_collected_kg: number;
+      total_waste_recycled_kg: number;
+      diversion_rate_percent: number;
+      estimated_co2e_avoided_kg: number;
+      is_estimate: boolean;
+      note: string;
+    }>("/operations/environmental-impact", { token }),
+
+  operationalSummary: (token: string, companyId?: string) => {
+    const qs = companyId ? `?company_id=${companyId}` : "";
+    return request<{
+      overdue_pickups: {
+        pickup_id: string;
+        status: string;
+        waste_category: string;
+        address_text: string | null;
+        overdue_days: number;
+        priority_score: number;
+        priority_label: string;
+        collector_name: string | null;
+        preferred_date: string | null;
+      }[];
+      overdue_count: number;
+      kpis: {
+        total_terminal: number;
+        completed: number;
+        failed: number;
+        missed: number;
+        cancelled: number;
+        active_in_progress: number;
+        unassigned_backlog: number;
+        completion_rate_percent: number;
+        failure_rate_percent: number;
+        miss_rate_percent: number;
+        avg_collection_weight_kg: number | null;
+        total_waste_collected_kg: number;
+      };
+      attention_items: { type: string; severity: string; message: string; count?: number; value?: number }[];
+    }>(`/operations/operational-summary${qs}`, { token });
+  },
+
+  zonePerformance: (token: string, companyId?: string, dateFrom?: string, dateTo?: string) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("company_id", companyId);
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    const qs = params.toString();
+    return request<{
+      zones: {
+        zone_id: string;
+        zone_name: string;
+        total_pickups: number;
+        completed: number;
+        failed_or_missed: number;
+        active: number;
+        completion_rate_percent: number | null;
+        waste_collected_kg: number;
+        unresolved_complaints: number;
+        attention_needed: boolean;
+      }[];
+      total_zones: number;
+    }>(`/operations/zone-performance${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  collectionTrend: (token: string, companyId?: string, days?: number) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("company_id", companyId);
+    if (days) params.set("days", String(days));
+    const qs = params.toString();
+    return request<{
+      trend: { date: string; completed: number; failed: number; total: number }[];
+      days: number;
+    }>(`/operations/collection-trend${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  collectorPerformance: (token: string, companyId?: string) => {
+    const qs = companyId ? `?company_id=${companyId}` : "";
+    return request<{
+      collectors: {
+        collector_id: string;
+        user_id: string;
+        full_name: string;
+        is_active: boolean;
+        completions: number;
+        failures: number;
+        total_kg_collected: number;
+        completion_rate_percent: number | null;
+      }[];
+      total: number;
+    }>(`/operations/collector-performance${qs}`, { token });
+  },
+
+  priorityQueue: (token: string, companyId?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("company_id", companyId);
+    if (limit) params.set("limit", String(limit));
+    const qs = params.toString();
+    return request<{
+      queue: {
+        pickup_id: string;
+        status: string;
+        waste_category: string;
+        address_text: string | null;
+        days_overdue: number;
+        priority_score: number;
+        priority_label: string;
+        requester_name: string;
+        assigned_collector_id: string | null;
+        preferred_date: string | null;
+      }[];
+      total: number;
+      scoring_note: string;
+    }>(`/operations/priority-queue${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  optimizedRoute: (token: string, collectorId: string) =>
+    request<{
+      collector_id: string;
+      origin: { latitude: number; longitude: number };
+      stops: {
+        sequence: number;
+        pickup_id: string;
+        status: string;
+        waste_category: string;
+        address_text: string | null;
+        latitude: number;
+        longitude: number;
+      }[];
+      total_stops: number;
+      algorithm: string;
+    }>(`/operations/route/${collectorId}`, { token }),
+
+  listOrganizationLocations: (token: string, organizationId: string) =>
+    request<{ id: string; label: string; address_text: string | null; latitude: number | null; longitude: number | null }[]>(
+      `/organizations/${organizationId}/locations`,
+      { token }
+    ),
+
+  recyclingByCategory: (token: string) =>
+    request<{
+      recycled_by_category_kg: Record<string, number>;
+      diversion_rate_percent: number;
+    }>("/recycling/impact-summary", { token }),
 };

@@ -1,8 +1,11 @@
 -r requirements.txt
-# Test-only dependencies (not required to run the app itself)
+# Test and development-only dependencies (not required to run the app itself)
 charset-normalizer==3.4.9
 cryptography==50.0.0
+httpx==0.28.1
 pdfminer.six==20260107
 pdfplumber==0.11.10
 pillow==12.3.0
 pypdfium2==5.12.1
+pytest==9.1.1
+pytest-asyncio==1.4.0

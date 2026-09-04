@@ -40,6 +40,8 @@ export default function CompanyPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [collectors, setCollectors] = useState<Collector[]>([]);
   const [zones, setZones] = useState<{ id: string; name: string; is_active: boolean }[]>([]);
+  const [collectorPerf, setCollectorPerf] = useState<Awaited<ReturnType<typeof api.collectorPerformance>> | null>(null);
+  const [opSummary, setOpSummary] = useState<Awaited<ReturnType<typeof api.operationalSummary>> | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,13 +61,17 @@ export default function CompanyPage() {
       api.listVehicles(token),
       api.listCollectors(token),
       api.listZones(token, user.waste_company_id),
+      api.collectorPerformance(token, user.waste_company_id).catch(() => null),
+      api.operationalSummary(token, user.waste_company_id).catch(() => null),
     ])
-      .then(([dash, profile, vehicleList, collectorList, zoneList]) => {
+      .then(([dash, profile, vehicleList, collectorList, zoneList, cp, op]) => {
         setDashboard(dash);
         setCompanyName(profile.name);
         setVehicles(vehicleList);
         setCollectors(collectorList);
         setZones(zoneList);
+        setCollectorPerf(cp);
+        setOpSummary(op);
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load company data."))
       .finally(() => setDataLoading(false));
@@ -159,21 +165,77 @@ export default function CompanyPage() {
               <p className="text-xs text-stone-500">Vehicles</p>
               <p className="text-2xl font-bold text-stone-900">{dashboard.total_vehicles}</p>
             </div>
-            <div className="rounded-lg border border-stone-200 bg-white p-4">
-              <p className="text-xs text-stone-500">Pending pickups</p>
-              <p className="text-2xl font-bold text-amber-700">{dashboard.pending_pickups}</p>
+            <div className={`rounded-lg border bg-white p-4 ${(opSummary?.kpis.unassigned_backlog ?? 0) > 0 ? "border-amber-300" : "border-stone-200"}`}>
+              <p className="text-xs text-stone-500">Unassigned backlog</p>
+              <p className={`text-2xl font-bold ${(opSummary?.kpis.unassigned_backlog ?? 0) > 0 ? "text-amber-700" : "text-stone-900"}`}>
+                {opSummary?.kpis.unassigned_backlog ?? dashboard.pending_pickups}
+              </p>
             </div>
             <div className="rounded-lg border border-stone-200 bg-white p-4">
               <p className="text-xs text-stone-500">Completed pickups</p>
               <p className="text-2xl font-bold text-emerald-700">{dashboard.completed_pickups}</p>
+            </div>
+            {opSummary?.kpis && (
+              <>
+                <div className={`rounded-lg border bg-white p-4 ${opSummary.kpis.failure_rate_percent > 20 ? "border-red-300" : "border-stone-200"}`}>
+                  <p className="text-xs text-stone-500">Completion rate</p>
+                  <p className={`text-2xl font-bold ${opSummary.kpis.completion_rate_percent >= 80 ? "text-emerald-700" : opSummary.kpis.completion_rate_percent < 60 ? "text-red-600" : "text-amber-700"}`}>
+                    {opSummary.kpis.completion_rate_percent}%
+                  </p>
+                </div>
+                <div className="rounded-lg border border-stone-200 bg-white p-4">
+                  <p className="text-xs text-stone-500">Waste collected (kg)</p>
+                  <p className="text-2xl font-bold text-stone-900">{opSummary.kpis.total_waste_collected_kg.toFixed(1)}</p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Collector performance table */}
+        {collectorPerf && collectorPerf.collectors.length > 0 && (
+          <div className="mt-8">
+            <h2 className="mb-3 text-lg font-semibold text-stone-900">Collector performance</h2>
+            <div className="overflow-hidden rounded-lg border border-stone-200 bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-stone-50 text-xs font-semibold text-stone-500">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Collector</th>
+                    <th className="px-4 py-3 text-right">Completed</th>
+                    <th className="px-4 py-3 text-right">Failed</th>
+                    <th className="px-4 py-3 text-right">Kg collected</th>
+                    <th className="px-4 py-3 text-right">Rate</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {collectorPerf.collectors.map((c) => (
+                    <tr key={c.collector_id}>
+                      <td className="px-4 py-3 font-medium text-stone-900">{c.full_name}</td>
+                      <td className="px-4 py-3 text-right text-emerald-700">{c.completions}</td>
+                      <td className="px-4 py-3 text-right text-red-600">{c.failures}</td>
+                      <td className="px-4 py-3 text-right">{c.total_kg_collected.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {c.completion_rate_percent !== null
+                          ? <span className={c.completion_rate_percent >= 80 ? "text-emerald-700 font-semibold" : c.completion_rate_percent < 60 ? "text-red-600 font-semibold" : "text-stone-700"}>{c.completion_rate_percent}%</span>
+                          : <span className="text-stone-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${c.is_active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-600"}`}>
+                          {c.is_active ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
 
         <div className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-stone-900">Vehicles</h2>
-            {!showVehicleForm && (
+            <h2 className="text-lg font-semibold text-stone-900">Vehicles</h2>            {!showVehicleForm && (
               <button
                 onClick={() => setShowVehicleForm(true)}
                 className="rounded-md bg-[#1b4332] px-4 py-2 text-sm font-semibold text-white hover:bg-[#2d6a4f]"

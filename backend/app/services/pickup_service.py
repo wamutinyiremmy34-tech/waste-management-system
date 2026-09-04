@@ -76,7 +76,7 @@ def get_pickup_or_404(db: Session, pickup_id: uuid.UUID) -> PickupRequest:
     return pickup
 
 
-def _authorize_pickup_access(pickup: PickupRequest, current_user: User) -> None:
+def _authorize_pickup_access(pickup: PickupRequest, current_user: User, db: Session) -> None:
     """
     Tenant/ownership isolation: a citizen may only see their own pickups; a
     collector may only see pickups assigned to them; company/municipal/super
@@ -87,7 +87,8 @@ def _authorize_pickup_access(pickup: PickupRequest, current_user: User) -> None:
     if current_user.role == UserRole.CITIZEN and pickup.requester_user_id == current_user.id:
         return
     if current_user.role == UserRole.COLLECTOR:
-        collector = db_get_collector_for_user(current_user)
+        # Use db.query (not object_session) for a reliable, non-fragile lookup.
+        collector = db.query(Collector).filter(Collector.user_id == current_user.id).first()
         if collector and pickup.assigned_collector_id == collector.id:
             return
     if current_user.role in (UserRole.COMPANY_ADMIN, UserRole.MUNICIPAL_ADMIN):
@@ -107,7 +108,7 @@ def db_get_collector_for_user(user: User):
 
 def get_pickup(db: Session, pickup_id: uuid.UUID, current_user: User) -> dict:
     pickup = get_pickup_or_404(db, pickup_id)
-    _authorize_pickup_access(pickup, current_user)
+    _authorize_pickup_access(pickup, current_user, db)
     return _to_out_dict(pickup)
 
 

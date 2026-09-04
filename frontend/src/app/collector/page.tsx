@@ -28,11 +28,14 @@ export default function CollectorPage() {
   const { token, user, loading, logout } = useAuth();
   const router = useRouter();
   const [pickups, setPickups] = useState<PickupOut[]>([]);
+  const [routeOrder, setRouteOrder] = useState<string[]>([]);  // ordered pickup IDs from optimizer
   const [dataLoading, setDataLoading] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
   const [completing, setCompleting] = useState<string | null>(null);
+  const [failing, setFailing] = useState<string | null>(null);
   const [quantity, setQuantity] = useState("");
   const [notes, setNotes] = useState("");
+  const [failureReason, setFailureReason] = useState("");
 
   const { isOnline, pending, syncing, queueOrSend } = useOfflineQueue(token);
 
@@ -41,11 +44,18 @@ export default function CollectorPage() {
     setDataLoading(true);
     api
       .assignedPickups(token)
-      .then((res) => setPickups(res.items))
+      .then((res) => {
+        setPickups(res.items);
+        // After loading, fetch optimized route using collector profile
+        return api.myCollectorProfile(token).then((profile) =>
+          api.optimizedRoute(token, profile.id).then((route) => {
+            setRouteOrder(route.stops.map((s) => s.pickup_id));
+          }).catch(() => {})
+        ).catch(() => {});
+      })
       .catch(() => setPickups([]))
       .finally(() => setDataLoading(false));
   }, [token]);
-
   useEffect(() => {
     if (!loading && !token) router.push("/login");
   }, [loading, token, router]);
@@ -114,13 +124,17 @@ export default function CollectorPage() {
 
   async function reportFailure(pickupId: string) {
     if (!token) return;
-    const reason = window.prompt("Reason the collection failed:");
-    if (!reason) return;
+    if (!failureReason.trim()) {
+      setActionError("Please enter a reason for the failure.");
+      return;
+    }
     setActionError(null);
     try {
-      await queueOrSend("fail_collection", pickupId, { failure_reason: reason }, () =>
-        api.failCollection(token, pickupId, reason).then(() => undefined)
+      await queueOrSend("fail_collection", pickupId, { failure_reason: failureReason }, () =>
+        api.failCollection(token, pickupId, failureReason).then(() => undefined)
       );
+      setFailing(null);
+      setFailureReason("");
       if (navigator.onLine) refresh();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : "Something went wrong.");
@@ -134,6 +148,18 @@ export default function CollectorPage() {
   const activePickups = pickups.filter((p) => p.status !== "COLLECTED" && p.status !== "FAILED");
   const doneToday = pickups.filter((p) => p.status === "COLLECTED").length;
   const conflicted = pending.filter((a) => a.lastError);
+
+  // Sort active pickups by optimized route order if available
+  const sortedActive = routeOrder.length > 0
+    ? [...activePickups].sort((a, b) => {
+        const ia = routeOrder.indexOf(a.id);
+        const ib = routeOrder.indexOf(b.id);
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      })
+    : activePickups;
 
   return (
     <main className="flex-1 bg-stone-50">
@@ -194,6 +220,11 @@ export default function CollectorPage() {
         )}
 
         <h2 className="mb-3 text-lg font-semibold text-stone-900">Your assignments</h2>
+        {routeOrder.length > 0 && (
+          <p className="mb-3 text-xs text-stone-400">
+            Ordered by nearest-neighbour route optimization — suggested collection sequence.
+          </p>
+        )}
 
         {dataLoading && <p className="text-sm text-stone-400">Loading...</p>}
         {!dataLoading && pickups.length === 0 && (
@@ -203,10 +234,15 @@ export default function CollectorPage() {
         )}
 
         <div className="space-y-3">
-          {pickups.map((p) => (
+          {sortedActive.map((p, idx) => (
             <div key={p.id} className="rounded-lg border border-stone-200 bg-white p-4">
               <div className="flex items-start justify-between">
                 <div>
+                  {routeOrder.length > 0 && (
+                    <span className="mb-1 inline-block rounded bg-stone-200 px-2 py-0.5 text-xs font-bold text-stone-600">
+                      Stop {idx + 1}
+                    </span>
+                  )}
                   <p className="font-medium text-stone-900">{p.waste_category}</p>
                   <p className="text-sm text-stone-500">{p.address_text || `${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}`}</p>
                   {p.notes && <p className="mt-1 text-xs text-stone-400">&ldquo;{p.notes}&rdquo;</p>}
@@ -232,7 +268,7 @@ export default function CollectorPage() {
                     {NEXT_LABEL[p.status]}
                   </button>
                   <button
-                    onClick={() => reportFailure(p.id)}
+                    onClick={() => { setFailing(p.id); setFailureReason(""); setCompleting(null); }}
                     className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
                   >
                     Report failed
@@ -240,20 +276,51 @@ export default function CollectorPage() {
                 </div>
               )}
 
-              {p.status === "ARRIVED" && completing !== p.id && (
+              {p.status === "ARRIVED" && completing !== p.id && failing !== p.id && (
                 <div className="mt-3 flex gap-2">
                   <button
-                    onClick={() => setCompleting(p.id)}
+                    onClick={() => { setCompleting(p.id); setFailing(null); }}
                     className="rounded-md bg-[#1b4332] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#2d6a4f]"
                   >
                     Complete collection
                   </button>
                   <button
-                    onClick={() => reportFailure(p.id)}
+                    onClick={() => { setFailing(p.id); setFailureReason(""); setCompleting(null); }}
                     className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
                   >
                     Report failed
                   </button>
+                </div>
+              )}
+
+              {failing === p.id && (
+                <div className="mt-3 space-y-2 rounded-md bg-red-50 p-3">
+                  <div>
+                    <label htmlFor={`fail-reason-${p.id}`} className="block text-xs font-medium text-stone-700">
+                      Reason the collection failed
+                    </label>
+                    <input
+                      id={`fail-reason-${p.id}`}
+                      value={failureReason}
+                      onChange={(e) => setFailureReason(e.target.value)}
+                      placeholder="e.g. Access road blocked, customer not home"
+                      className="mt-1 w-full rounded-md border border-stone-300 px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => reportFailure(p.id)}
+                      className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+                    >
+                      Submit failure
+                    </button>
+                    <button
+                      onClick={() => { setFailing(null); setFailureReason(""); }}
+                      className="rounded-md border border-stone-300 px-3 py-1.5 text-sm font-medium text-stone-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -297,6 +364,23 @@ export default function CollectorPage() {
             </div>
           ))}
         </div>
+
+        {/* Completed pickups (collapsed, for reference) */}
+        {pickups.filter(p => p.status === "COLLECTED" || p.status === "FAILED").length > 0 && (
+          <div className="mt-6">
+            <h3 className="mb-2 text-sm font-semibold text-stone-500">Completed / failed today</h3>
+            <div className="space-y-2">
+              {pickups.filter(p => p.status === "COLLECTED" || p.status === "FAILED").map((p) => (
+                <div key={p.id} className="flex items-center justify-between rounded-md border border-stone-100 bg-white px-4 py-2">
+                  <p className="text-sm text-stone-600">{p.waste_category} · {p.address_text || `${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}`}</p>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_COLORS[p.status] || "bg-stone-100 text-stone-700"}`}>
+                    {p.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

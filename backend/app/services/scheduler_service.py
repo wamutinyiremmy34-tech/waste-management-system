@@ -8,6 +8,7 @@ when it's due — called by `scripts/run_scheduler.py`, intended to run on a
 periodic job (cron/Celery-beat/systemd timer — any of these work; the
 function itself is transport-agnostic).
 """
+import logging
 from datetime import date, timedelta
 
 from sqlalchemy import and_
@@ -16,6 +17,8 @@ from sqlalchemy.orm import Session
 from app.models.enums import NotificationType, PickupStatus, RecurrenceFrequency
 from app.models.notifications_audit import AuditLog, Notification
 from app.models.pickup import PickupRequest, RecurringSchedule
+
+logger = logging.getLogger("ecotrack.scheduler")
 
 
 def _next_run_date(current: date, frequency: RecurrenceFrequency, day_of_week: int | None) -> date:
@@ -61,42 +64,78 @@ def materialize_due_schedules(db: Session, as_of: date | None = None) -> list[Pi
 
     created: list[PickupRequest] = []
     for schedule in due_schedules:
-        pickup = PickupRequest(
-            requester_user_id=schedule.requester_user_id,
-            organization_id=schedule.organization_id,
-            waste_category=schedule.waste_category,
-            location=schedule.location,
-            address_text=schedule.address_text,
-            preferred_date=schedule.next_run_date,
-            recurring_schedule_id=schedule.id,
-            status=PickupStatus.REQUESTED,
-        )
-        db.add(pickup)
-        db.flush()
-
-        db.add(
-            Notification(
-                user_id=schedule.requester_user_id,
-                type=NotificationType.PICKUP_SCHEDULED,
-                title="Your recurring pickup has been scheduled",
-                body=f"A {schedule.waste_category.value.lower()} pickup was auto-created from your recurring schedule.",
-                reference_id=pickup.id,
+        try:
+            pickup = PickupRequest(
+                requester_user_id=schedule.requester_user_id,
+                organization_id=schedule.organization_id,
+                waste_category=schedule.waste_category,
+                location=schedule.location,
+                address_text=schedule.address_text,
+                preferred_date=schedule.next_run_date,
+                recurring_schedule_id=schedule.id,
+                status=PickupStatus.REQUESTED,
             )
-        )
-        db.add(
-            AuditLog(
-                actor_user_id=None,
-                action="RECURRING_PICKUP_MATERIALIZED",
-                entity_type="PickupRequest",
-                entity_id=str(pickup.id),
-                metadata_json={"recurring_schedule_id": str(schedule.id)},
+            db.add(pickup)
+            db.flush()
+
+            db.add(
+                Notification(
+                    user_id=schedule.requester_user_id,
+                    type=NotificationType.PICKUP_SCHEDULED,
+                    title="Your recurring pickup has been scheduled",
+                    body=f"A {schedule.waste_category.value.lower()} pickup was auto-created from your recurring schedule.",
+                    reference_id=pickup.id,
+                )
             )
-        )
+            db.add(
+                AuditLog(
+                    actor_user_id=None,
+                    action="RECURRING_PICKUP_MATERIALIZED",
+                    entity_type="PickupRequest",
+                    entity_id=str(pickup.id),
+                    metadata_json={"recurring_schedule_id": str(schedule.id)},
+                )
+            )
 
-        schedule.next_run_date = _next_run_date(schedule.next_run_date, schedule.frequency, schedule.day_of_week)
-        created.append(pickup)
+            # Advance next_run_date BEFORE committing so that if commit fails
+            # and we retry, we won't try to re-materialize the same date.
+            schedule.next_run_date = _next_run_date(schedule.next_run_date, schedule.frequency, schedule.day_of_week)
+            db.commit()
+            created.append(pickup)
+            logger.info(
+                "Recurring pickup materialized schedule_id=%s pickup_id=%s user_id=%s category=%s",
+                str(schedule.id),
+                str(pickup.id),
+                str(schedule.requester_user_id),
+                schedule.waste_category.value,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to materialize recurring schedule schedule_id=%s error=%s",
+                str(schedule.id),
+                str(exc),
+                exc_info=True,
+            )
+            db.rollback()
+            # Advance next_run_date even on failure to prevent this schedule
+            # from being picked up again on every subsequent scheduler run.
+            try:
+                schedule.next_run_date = _next_run_date(
+                    schedule.next_run_date, schedule.frequency, schedule.day_of_week
+                )
+                db.commit()
+            except Exception as advance_exc:
+                logger.error(
+                    "Failed to advance next_run_date after schedule error schedule_id=%s error=%s",
+                    str(schedule.id),
+                    str(advance_exc),
+                )
+                db.rollback()
 
-    db.commit()
+    logger.info("Scheduler run complete created=%d due=%d", len(created), len(due_schedules))
     for p in created:
-        db.refresh(p)
+        try:
+            db.refresh(p)
+        except Exception:
+            pass  # Already committed — refresh is best-effort
     return created

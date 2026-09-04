@@ -1,68 +1,142 @@
 # Deployment
 
-## Local development (Docker Compose)
+## Quick start (Docker Compose — local development)
 
 ```bash
-cp backend/.env.example backend/.env    # edit SECRET_KEY at minimum
+cp backend/.env.example backend/.env   # edit SECRET_KEY at minimum
 docker compose up --build
 ```
 
-This starts: `db` (postgis/postgis:16-3.4), `redis`, `backend` (FastAPI on :8000, runs migrations
-and optionally seeds on start via `SEED_ON_START=true`), `frontend` (Next.js production build on
-:3000).
+This starts: `db` (postgis/postgis:16-3.4), `redis:7-alpine`, `backend` (FastAPI on :8000),
+`frontend` (Next.js on :3000). The backend runs `alembic upgrade head` on every start.
 
-**Precise, tested status of the Docker path in this project's build environment**: Docker itself
-was *not* preinstalled, but `apt-get install docker.io` succeeded and `dockerd` started and ran
-correctly (`docker info` reports a healthy daemon, correct runtime, etc.). However, `docker build`
-on this project's actual `backend/Dockerfile` fails at the very first `FROM python:3.12-slim` line
-with `403 Forbidden` resolving `registry-1.docker.io` — confirmed universal by also failing to pull
-`alpine:latest`. This environment's network egress allowlist includes package registries (PyPI,
-npm, apt, GitHub) but **no container registry domains at all**, so no `docker pull`/`docker build
-FROM <image>` can succeed here regardless of which base image is used. This is a definitive,
-directly-tested finding — not a guess or an assumption that Docker "probably doesn't work."
+The frontend waits for the backend health check to pass before starting (`depends_on:
+condition: service_healthy`). The backend in turn waits for both `db` and `redis` to be healthy.
 
-The Dockerfiles and compose file themselves follow standard, conventional patterns and mirror the
-exact commands (`pip install -r requirements.txt`, `alembic upgrade head`, `npm run build`) that
-**were** verified working directly on the host in this environment. In an environment with normal
-internet/registry access, `docker compose up --build` should work as written — but that specific
-claim remains unverified here, and should be smoke-tested in a real deployment environment before
-being relied upon.
+**Seed demo data (optional, development only):**
+```bash
+docker compose exec backend python3 scripts/seed.py
+```
+Never use `SEED_ON_START=true` in production — it creates demo accounts with known credentials.
+
+### Docker status
+
+The compose file and Dockerfiles follow standard conventions and mirror the commands
+(`pip install -r requirements.txt`, `alembic upgrade head`, `npm run build`) verified working
+directly. Network registry access is required to pull `python:3.12-slim` and `node:22-alpine`.
+If your environment blocks container registry DNS, use a pre-pulled image or a local mirror.
+
+---
 
 ## Local development (without Docker)
 
 ```bash
-# 1. Postgres + PostGIS + Redis running locally (see README.md)
+# Prerequisites: PostgreSQL + PostGIS running locally, Redis running
 
-# 2. Backend
+# 1. Backend
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt    # for tests
 cp .env.example .env
+# Edit .env: at minimum set DATABASE_URL and SECRET_KEY
 alembic upgrade head
-python3 scripts/seed.py   # optional demo data
-uvicorn app.main:app --reload
+python3 scripts/seed.py            # optional demo data
+uvicorn app.main:app --reload      # http://localhost:8000
 
-# 3. Frontend
+# 2. Frontend
 cd frontend
 npm install
-cp .env.example .env.local
-npm run dev
+# Create .env.local:
+echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1" > .env.local
+npm run dev                        # http://localhost:3000
 ```
 
-This exact sequence (minus `--reload`/`dev` vs `start`) is what was actually run and verified in
-this project — see `docs/testing.md` for what was tested.
+---
 
 ## Environment variables
 
-See `backend/.env.example` and `frontend/.env.example` — every variable is documented there.
-`SECRET_KEY` **must** be changed from the default before any non-local use; the default is
-explicitly labeled insecure.
+See `backend/.env.example` — every variable is documented there.
 
-## Production considerations (not implemented, called out honestly)
+**Critical production variables:**
 
-- No TLS termination / reverse proxy config is included — a real deployment needs nginx/Caddy/a
-  cloud load balancer in front of both services.
-- No horizontal-scaling guidance (this MVP runs as single backend/frontend containers).
-- No managed-database migration strategy (e.g. blue-green) beyond `alembic upgrade head`.
-- `SECRET_KEY` and DB credentials should come from a secrets manager, not `.env` files, in
-  production — `.env` here is for local development only.
+| Variable | Required | Notes |
+|---|---|---|
+| `SECRET_KEY` | YES | Must be changed. App refuses to start in production with the default. |
+| `APP_ENV` | YES | Set to `production`. Controls docs visibility, startup validation. |
+| `DEBUG` | YES | Must be `false` in production. |
+| `DATABASE_URL` | YES | Use the restricted `ecotrack_app` role for the app; superuser for migrations. |
+| `CORS_ORIGINS` | YES | Set to your exact frontend domain(s). |
+| `SEED_ON_START` | NO | Must NOT be `true` in production. |
+
+---
+
+## Running tests
+
+```bash
+# Backend (requires PostgreSQL + PostGIS + Redis)
+cd backend
+APP_ENV=testing pytest tests/ -v
+
+# Frontend
+cd frontend
+npm test -- --ci
+npx tsc --noEmit
+npm run build
+
+# E2E (requires full stack running)
+cd e2e
+pytest . -v
+```
+
+---
+
+## Production deployment checklist
+
+Before going live:
+
+- [ ] `SECRET_KEY` is a real random value (not the default)
+- [ ] `APP_ENV=production` and `DEBUG=false`
+- [ ] `CORS_ORIGINS` is set to your actual domain
+- [ ] `SEED_ON_START=false` (or omitted entirely)
+- [ ] `DATABASE_URL` uses the restricted `ecotrack_app` role (not superuser)
+- [ ] `ecotrack_app` role password has been changed from the dev default
+- [ ] Migrations ran successfully: `alembic upgrade head`
+- [ ] Health check passes: `GET /api/v1/health` returns `{"status":"ok"}`
+- [ ] Swagger docs are not accessible: `GET /docs` returns 404
+- [ ] Pre-deployment backup taken (see `docs/backup-and-recovery.md`)
+- [ ] TLS/HTTPS configured on the reverse proxy
+
+## Production considerations (not yet implemented)
+
+- **TLS termination:** nginx/Caddy/cloud load balancer must sit in front of both services.
+  The backend's HSTS header activates automatically when requests arrive over HTTPS.
+- **Horizontal scaling:** This MVP is designed for single-instance deployment.
+- **Secrets management:** `.env` files are for local dev. Production should use a secrets
+  manager (AWS Secrets Manager, HashiCorp Vault, etc.) and inject values as environment
+  variables at container runtime.
+- **Managed database migrations:** Consider a migration lock (e.g. Alembic with a lock table)
+  before running `alembic upgrade head` in a multi-instance deployment.
+
+## Useful operational commands
+
+```bash
+# View backend logs
+docker compose logs -f backend
+
+# Run migrations manually
+docker compose run --rm backend alembic upgrade head
+
+# Open a DB shell
+docker exec -it ecotrack_db psql -U ecotrack -d ecotrack_prod
+
+# Restart the backend only
+docker compose restart backend
+
+# Full restart
+docker compose down && docker compose up -d
+
+# Stop without removing volumes
+docker compose stop
+```

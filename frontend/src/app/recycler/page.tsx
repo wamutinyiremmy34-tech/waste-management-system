@@ -102,23 +102,61 @@ export default function RecyclerPage() {
 
       <div className="mx-auto max-w-2xl px-4 py-6">
         {impact && (
-          <div className="mb-6 grid grid-cols-2 gap-4">
-            <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
-              <p className="text-xs text-stone-500">Total recycled (platform-wide)</p>
-              <p className="text-2xl font-bold text-emerald-700">{impact.total_waste_recycled_kg} kg</p>
+          <>
+            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
+                <p className="text-xs text-stone-500">Total recycled (platform)</p>
+                <p className="text-2xl font-bold text-emerald-700">{impact.total_waste_recycled_kg} kg</p>
+              </div>
+              <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
+                <p className="text-xs text-stone-500" title="Can exceed 100% if material comes from outside EcoTrack-tracked pickups">
+                  Diversion rate*
+                </p>
+                <p className="text-2xl font-bold text-[#1b4332]">{impact.diversion_rate_percent}%</p>
+              </div>
+              <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
+                <p className="text-xs text-stone-500">Waste collected (platform)</p>
+                <p className="text-2xl font-bold text-stone-900">{impact.total_waste_collected_kg} kg</p>
+              </div>
+              <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
+                <p className="text-xs text-stone-500">Est. CO₂e avoided</p>
+                <p className="text-2xl font-bold text-stone-900">{impact.estimated_co2e_avoided_kg ?? "—"} kg</p>
+                <p className="text-[10px] text-stone-400">estimate</p>
+              </div>
             </div>
-            <div className="rounded-lg border border-stone-200 bg-white p-4 text-center">
-              <p className="text-xs text-stone-500" title="Recycled volume relative to EcoTrack-tracked pickups — can exceed 100% if you receive material from outside sources">
-                Diversion rate*
+            {impact.diversion_rate_percent > 100 && (
+              <p className="-mt-4 mb-4 text-xs text-stone-400">
+                * Exceeds 100% because recorded recycling includes material from outside EcoTrack-tracked pickups.
               </p>
-              <p className="text-2xl font-bold text-[#1b4332]">{impact.diversion_rate_percent}%</p>
-            </div>
-          </div>
-        )}
-        {impact && impact.diversion_rate_percent > 100 && (
-          <p className="-mt-4 mb-6 text-xs text-stone-400">
-            * Exceeds 100% because recorded recycling includes material from outside EcoTrack-tracked pickups.
-          </p>
+            )}
+
+            {/* By-category breakdown — API returns it but was never displayed */}
+            {Object.keys(impact.recycled_by_category_kg ?? {}).length > 0 && (
+              <div className="mb-6 rounded-lg border border-stone-200 bg-white p-4">
+                <h2 className="mb-3 text-sm font-semibold text-stone-700">Recycled by category (kg)</h2>
+                {(() => {
+                  const entries = Object.entries(impact.recycled_by_category_kg ?? {}).sort(([, a], [, b]) => b - a);
+                  const max = Math.max(1, ...entries.map(([, v]) => v));
+                  return (
+                    <div className="space-y-2">
+                      {entries.map(([cat, kg]) => (
+                        <div key={cat} className="flex items-center gap-3">
+                          <span className="w-24 shrink-0 text-xs font-medium text-stone-600">{cat}</span>
+                          <div className="h-3 flex-1 rounded bg-stone-100">
+                            <div className="h-3 rounded bg-emerald-500" style={{ width: `${Math.max(4, (kg / max) * 100)}%` }} />
+                          </div>
+                          <span className="w-16 shrink-0 text-right text-xs text-stone-500">{kg.toFixed(1)} kg</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <p className="mt-2 text-xs text-stone-400">
+                  CO₂e estimate: {impact.estimated_co2e_avoided_kg} kg avoided (configurable factors — see docs/environmental-impact.md)
+                </p>
+              </div>
+            )}
+          </>
         )}
 
         <div className="mb-6 rounded-lg border border-stone-200 bg-white p-4">

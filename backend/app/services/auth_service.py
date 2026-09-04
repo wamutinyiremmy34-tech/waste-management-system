@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -14,6 +15,8 @@ from app.security.auth import (
     hash_token,
     verify_password,
 )
+
+logger = logging.getLogger("ecotrack.auth")
 
 
 def register_user(db: Session, payload: RegisterRequest) -> User:
@@ -53,13 +56,16 @@ def _issue_tokens(db: Session, user: User) -> tuple[str, str]:
 def login(db: Session, payload: LoginRequest) -> tuple[str, str]:
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if not user or not verify_password(payload.password, user.hashed_password):
+        logger.warning("Failed login attempt email=%s", payload.email.lower())
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
+        logger.warning("Login attempt on deactivated account user_id=%s", str(user.id))
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
 
     access_token, raw_refresh = _issue_tokens(db, user)
     db.add(AuditLog(actor_user_id=user.id, action="USER_LOGIN", entity_type="User", entity_id=str(user.id)))
     db.commit()
+    logger.info("User logged in user_id=%s role=%s", str(user.id), user.role.value)
     return access_token, raw_refresh
 
 
@@ -67,16 +73,19 @@ def refresh_access_token(db: Session, raw_refresh_token: str) -> tuple[str, str]
     token_hash = hash_token(raw_refresh_token)
     token_row = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
     if not token_row or token_row.revoked or token_row.expires_at < datetime.now(timezone.utc):
+        logger.warning("Invalid or expired refresh token presented")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
 
     user = db.get(User, token_row.user_id)
     if not user or not user.is_active:
+        logger.warning("Refresh attempt for inactive/missing user user_id=%s", str(token_row.user_id))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive or not found")
 
     # Rotate: revoke the old refresh token, issue a new pair.
     token_row.revoked = True
     db.commit()
     access_token, raw_refresh = _issue_tokens(db, user)
+    logger.info("Token refreshed user_id=%s", str(user.id))
     return access_token, raw_refresh
 
 

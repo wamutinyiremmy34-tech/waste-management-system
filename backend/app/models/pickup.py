@@ -85,8 +85,8 @@ class Collection(Base, UUIDPKMixin, TimestampMixin):
     pickup_request_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("pickup_requests.id", ondelete="CASCADE"), nullable=False, unique=True
     )
-    collector_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("collectors.id", ondelete="SET NULL"), nullable=False
+    collector_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("collectors.id", ondelete="SET NULL"), nullable=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     collection_location: Mapped[object | None] = mapped_column(

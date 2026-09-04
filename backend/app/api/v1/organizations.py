@@ -129,9 +129,35 @@ def _authorize_org_access(current_user: User, organization_id: uuid.UUID) -> Non
             raise HTTPException(status_code=404, detail="Organization not found")
 
 
+@router.get("/{organization_id}/locations")
+def list_locations(
+    organization_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List branch locations for an organization. Returns stored PostGIS points as lat/lng."""
+    _authorize_org_access(current_user, organization_id)
+    locs = (
+        db.query(OrganizationLocation)
+        .filter(OrganizationLocation.organization_id == organization_id)
+        .order_by(OrganizationLocation.created_at)
+        .all()
+    )
+    from app.core.geo import latlng_from_point
+    return [
+        {
+            "id": str(loc.id),
+            "label": loc.label,
+            "address_text": loc.address_text,
+            "latitude": latlng_from_point(loc.location)[0] if loc.location else None,
+            "longitude": latlng_from_point(loc.location)[1] if loc.location else None,
+        }
+        for loc in locs
+    ]
+
+
 @router.get("/{organization_id}/staff")
-def list_staff(
-    organization_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+def list_staff(    organization_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
     _authorize_org_access(current_user, organization_id)
     staff = db.query(User).filter(User.organization_id == organization_id).order_by(User.created_at).all()
