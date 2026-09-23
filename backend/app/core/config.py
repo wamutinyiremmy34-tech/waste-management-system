@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # --- Rate limiting ---
     RATE_LIMIT_PER_MINUTE: int = 60
 
+    # --- Spatial intelligence ---
+    # Radius (metres) used to associate nearby complaints / bins with a pickup
+    # location when computing CollectionPrioritizer scores. Chosen to reflect
+    # a realistic "same-block" radius in dense Kampala streets.
+    NEARBY_RADIUS_METERS: int = 500
+
 
 @lru_cache
 def get_settings() -> Settings:

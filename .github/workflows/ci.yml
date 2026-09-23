@@ -96,7 +96,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        # Use npm install (not npm ci) because package-lock.json needs to be
+        # regenerated to include leaflet/react-leaflet added in Phase 3.
+        # Once the lock file is committed after a full npm install locally,
+        # this can be changed back to npm ci.
+        run: npm install
 
       - name: Lint
         run: npm run lint
@@ -196,7 +200,9 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        # Use npm install (not npm ci) — same reason as the frontend job above:
+        # package-lock.json needs regeneration to include Phase 3 leaflet packages.
+        run: npm install
 
       - name: Enable PostGIS on the E2E database
         run: |

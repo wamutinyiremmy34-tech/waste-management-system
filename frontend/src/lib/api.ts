@@ -10,12 +10,54 @@ export class ApiError extends Error {
   }
 }
 
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+
 /**
- * Attempts to refresh the access token using the stored refresh token.
- * Returns the new access token on success, or null if refresh fails
- * (expired, revoked, or no refresh token stored). On failure, clears
- * both tokens from localStorage so the user is cleanly logged out.
+ * Wraps a promise with a timeout using AbortController so the underlying
+ * fetch is cancelled on timeout (frees sockets, prevents stale callbacks).
  */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  signalOrMs: AbortSignal | number | undefined,
+  message = "Request timed out.",
+  controller?: AbortController
+): Promise<T> {
+  let ms: number;
+  let userSignal: AbortSignal | undefined;
+  if (signalOrMs instanceof AbortSignal) {
+    ms = DEFAULT_REQUEST_TIMEOUT_MS;
+    userSignal = signalOrMs;
+  } else if (typeof signalOrMs === "number") {
+    ms = signalOrMs;
+  } else {
+    ms = DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const toId = setTimeout(() => {
+      controller?.abort("timeout");
+      reject(new ApiError(504, message));
+    }, ms);
+    const onUserAbort = () => {
+      clearTimeout(toId);
+      controller?.abort(userSignal?.reason);
+      reject(new ApiError(0, "Request cancelled."));
+    };
+    userSignal?.addEventListener?.("abort", onUserAbort, { once: true });
+    promise.then(
+      (v) => {
+        clearTimeout(toId);
+        userSignal?.removeEventListener?.("abort", onUserAbort);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(toId);
+        userSignal?.removeEventListener?.("abort", onUserAbort);
+        reject(e);
+      }
+    );
+  });
+}
+
 async function tryRefreshToken(): Promise<string | null> {
   if (typeof window === "undefined") return null;
   const refreshToken = localStorage.getItem("ecotrack_refresh_token");
@@ -43,11 +85,14 @@ async function tryRefreshToken(): Promise<string | null> {
 
 async function request<T>(
   path: string,
-  options: RequestInit & { token?: string | null; _retried?: boolean } = {}
+  options: RequestInit & { token?: string | null; _retried?: boolean; signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<T> {
-  const { token, headers, _retried, ...rest } = options;
-  const res = await fetch(`${API_BASE}${path}`, {
+  const { token, headers, _retried, signal: userSignal, timeoutMs, ...rest } = options;
+  const controller = userSignal ? undefined : new AbortController();
+  const signal = userSignal ?? controller!.signal;
+  const fetchPromise = fetch(`${API_BASE}${path}`, {
     ...rest,
+    signal,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -55,15 +100,21 @@ async function request<T>(
     },
   });
 
-  // Auto-refresh on 401: attempt one token refresh and retry the original
-  // request. If the refresh also fails (or this is already a retry), throw
-  // so the caller can handle the unauthenticated state (e.g. redirect to login).
+  let res: Response;
+  try {
+    res = await withTimeout(fetchPromise, timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, `${path} request timed out.`, controller);
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") {
+      throw new ApiError(0, "Request cancelled.");
+    }
+    throw e;
+  }
+
   if (res.status === 401 && !_retried && token) {
     const newToken = await tryRefreshToken();
     if (newToken) {
       return request<T>(path, { ...options, token: newToken, _retried: true });
     }
-    // Refresh failed — fall through to throw the 401 below.
   }
 
   if (!res.ok) {
@@ -115,6 +166,18 @@ export interface PickupOut {
   created_at: string;
 }
 
+export interface ComplaintOut {
+  id: string;
+  reporter_user_id: string;
+  category: string;
+  description: string;
+  status: string;
+  latitude: number;
+  longitude: number;
+  resolution_notes: string | null;
+  created_at: string;
+}
+
 /**
  * Downloads an authenticated file (CSV/PDF report) as a real browser
  * download. A plain <a href> can't attach the Bearer token to a navigation,
@@ -158,6 +221,8 @@ export const api = {
       latitude: number;
       longitude: number;
       address_text?: string;
+      preferred_date?: string;
+      preferred_time_window?: string;
       notes?: string;
     }
   ) => request<PickupOut>("/pickups", { method: "POST", token, body: JSON.stringify(payload) }),
@@ -369,6 +434,7 @@ export const api = {
       total_waste_collected_kg: number;
       total_waste_recycled_kg: number;
       diversion_rate_percent: number;
+      estimated_co2e_avoided_kg: number | null;
       recycled_by_category_kg: Record<string, number>;
       note: string;
     }>("/recycling/impact-summary", { token }),
@@ -565,4 +631,77 @@ export const api = {
       recycled_by_category_kg: Record<string, number>;
       diversion_rate_percent: number;
     }>("/recycling/impact-summary", { token }),
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — Map and location
+  // ---------------------------------------------------------------------------
+
+  zonesGeoJSON: (token: string, wasteCompanyId?: string) => {
+    const qs = wasteCompanyId ? `?waste_company_id=${wasteCompanyId}` : "";
+    return request<{
+      type: "FeatureCollection";
+      features: {
+        type: "Feature";
+        properties: { id: string; name: string; waste_company_id: string; is_active: boolean };
+        geometry: object;
+      }[];
+      total: number;
+    }>(`/zones/geojson${qs}`, { token });
+  },
+
+  mapData: (token: string, companyId?: string) => {
+    const qs = companyId ? `?company_id=${companyId}` : "";
+    return request<{
+      complaints: { id: string; latitude: number; longitude: number; category: string; status: string }[];
+      bins: { id: string; code: string; latitude: number; longitude: number; status: string; current_fill_percent: number; bin_type: string }[];
+      pickups: { id: string; latitude: number; longitude: number; status: string; waste_category: string; address_text: string | null }[];
+      hotspots: { cluster_id: number; complaint_count: number; latitude: number; longitude: number }[];
+    }>(`/operations/map-data${qs}`, { token });
+  },
+
+  updateCollectorLocation: (token: string, latitude: number, longitude: number) =>
+    request<{ id: string; latitude: number | null; longitude: number | null }>(
+      "/collectors/me/location",
+      {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ latitude, longitude }),
+      }
+    ),
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — Citizen dashboard additions
+  // ---------------------------------------------------------------------------
+
+  markNotificationRead: (token: string, notificationId: string) =>
+    request<{ status: string }>(`/notifications/${notificationId}/read`, {
+      method: "PATCH",
+      token,
+    }),
+
+  myComplaints: (token: string) =>
+    request<{
+      items: ComplaintOut[];
+      total: number;
+      page: number;
+      page_size: number;
+    }>("/complaints/mine", { token }),
+
+  reportComplaint: (
+    token: string,
+    payload: {
+      category: string;
+      description: string;
+      latitude: number;
+      longitude: number;
+    }
+  ) =>
+    request<ComplaintOut>("/complaints", {
+      method: "POST",
+      token,
+      body: JSON.stringify(payload),
+    }),
+
+  getComplaintById: (token: string, complaintId: string) =>
+    request<ComplaintOut>(`/complaints/${complaintId}`, { token }),
 };

@@ -1,26 +1,112 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/**
+ * EcoTrack Design System — Global CSS Foundation
+ *
+ * Strategy:
+ * - All visual decisions live here via @theme tokens.
+ * - layout.tsx body classes (bg-stone-50, text-stone-900, font-sans) are
+ *   REMOVED from the JSX and replaced by the body rule below so there is
+ *   exactly ONE place that sets background, foreground, and font-family.
+ * - Dark mode is intentionally deferred: the CSS variables below establish
+ *   the correct structure but we do NOT apply partial dark: Tailwind classes
+ *   that would produce broken contrast. A future phase can enable dark mode
+ *   consistently once every component supports it.
+ */
 
+/* ─── EcoTrack brand color tokens ──────────────────────────────────────────
+ *
+ * Tailwind 4 @theme block registers these as first-class utilities:
+ *   bg-eco-900, text-eco-700, border-eco-200, etc.
+ *
+ * This replaces the hardcoded bg-[#1b4332] / bg-[#2d6a4f] strings that
+ * currently appear 40+ times across the codebase. New components use these
+ * tokens; existing pages are migrated incrementally in later phases.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  /* Brand greens */
+  --color-eco-900: #1b4332;
+  --color-eco-700: #2d6a4f;
+  --color-eco-500: #52b788;
+  --color-eco-200: #d8f3dc;
+  --color-eco-50:  #f0fdf4;
+
+  /* ── Semantic status colors (pickup lifecycle) ─────────────────────────
+   * Named tokens so StatusBadge and any future component can reference
+   * --color-status-* instead of repeating Tailwind color strings.
+   * Values deliberately match the existing STATUS_COLORS records so that
+   * the visual output is identical — we are systematizing, not redesigning.
+   */
+  --color-status-requested-bg:  #fef3c7; /* amber-100  */
+  --color-status-requested-text:#92400e; /* amber-800  */
+  --color-status-active-bg:     #dbeafe; /* blue-100   */
+  --color-status-active-text:   #1e40af; /* blue-800   */
+  --color-status-collected-bg:  #d1fae5; /* emerald-100*/
+  --color-status-collected-text:#065f46; /* emerald-800*/
+  --color-status-failed-bg:     #fee2e2; /* red-100    */
+  --color-status-failed-text:   #991b1b; /* red-800    */
+  --color-status-cancelled-bg:  #e7e5e4; /* stone-200  */
+  --color-status-cancelled-text:#44403c; /* stone-600  */
+
+  /* ── Priority colors ────────────────────────────────────────────────── */
+  --color-priority-high-bg:     #fee2e2; /* red-100   */
+  --color-priority-high-text:   #991b1b; /* red-800   */
+  --color-priority-medium-bg:   #fef3c7; /* amber-100 */
+  --color-priority-medium-text: #92400e; /* amber-800 */
+  --color-priority-low-bg:      #f5f5f4; /* stone-100 */
+  --color-priority-low-text:    #57534e; /* stone-700 */
+
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+/* ─── Body baseline ─────────────────────────────────────────────────────────
+ *
+ * ONE definitive body rule. layout.tsx no longer needs to set bg/text/font
+ * via Tailwind classes (those classes remain but are now redundant, which is
+ * harmless — Tailwind classes will agree with this rule since we use the same
+ * values). The font-family here overrides the previous "Arial, Helvetica,
+ * sans-serif" that was shipped in the original globals.css.
+ */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #f5f5f4; /* stone-50 — matches layout.tsx bg-stone-50 */
+  color: #1c1917;             /* stone-900 — matches layout.tsx text-stone-900 */
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+/* ─── Focus ring foundation ─────────────────────────────────────────────────
+ *
+ * Global visible focus ring for keyboard navigation. Uses the EcoTrack
+ * brand green so focused elements feel on-brand, not a browser default blue.
+ * The :focus-visible selector ensures the ring only appears for keyboard
+ * navigation, not on mouse clicks — current best practice.
+ *
+ * Individual components can override with a more specific rule if needed,
+ * but this ensures nothing accidentally has no focus ring.
+ */
+:focus-visible {
+  outline: 2px solid #2d6a4f; /* eco-700 */
+  outline-offset: 2px;
+}
+
+/* ─── Dark mode — intentionally minimal for now ─────────────────────────────
+ *
+ * The original globals.css defined dark mode CSS variables but Tailwind dark:
+ * classes were never applied consistently in the app. Applying partial dark
+ * mode now would produce broken contrast on many pages.
+ *
+ * Decision: remove the broken half-implementation. Establish the correct
+ * structural foundation (prefers-color-scheme listener on :root custom props)
+ * but do NOT change any component colors yet. A future dedicated dark-mode
+ * phase will add dark: variants to every component systematically.
+ *
+ * This means: users with system dark mode will see the light theme instead of
+ * the previously broken half-dark-half-light appearance. That is a better
+ * user experience than the previous state.
+ */
+/* (no @media prefers-color-scheme block — intentionally omitted until
+    full dark mode is implemented in a future phase) */

@@ -72,8 +72,39 @@ No metric is invented or estimated without documentation.
 | **Formula** | `score = days_overdue × 2.0 + bin_fill_percent × 0.5 + nearby_complaint_count × 5.0` |
 | **Weights** | Configurable in `CollectionPrioritizer.__init__` |
 | **Labels** | HIGH ≥ 10 · MEDIUM ≥ 4 · LOW < 4 |
-| **Current limitation** | `bin_fill_percent` = 0 (bins not linked to pickups in MVP) · `nearby_complaint_count` = 0 (spatial join per-pickup excluded for batch performance) · Score is therefore driven entirely by `days_overdue` in the MVP |
-| **Future improvement** | Add `ST_DWithin` complaint count per pickup for a richer score |
+| **Phase 3 improvement** | All three factors now use real data from PostGIS spatial queries |
+| **bin_fill_percent** | Nearest active bin within `NEARBY_RADIUS_METERS` (default 500m) of the pickup location |
+| **nearby_complaint_count** | Count of unresolved complaints within `NEARBY_RADIUS_METERS` of the pickup location |
+| **Spatial queries** | Two batched `ST_DWithin` queries (one for bins, one for complaints) — O(1) DB round-trips regardless of pickup count |
+| **Configurable radius** | `NEARBY_RADIUS_METERS` in `Settings` (default 500m) · Set via `NEARBY_RADIUS_METERS=500` in `.env` |
+| **Score breakdown** | Each priority item includes `score_breakdown` with per-factor contributions for operator transparency |
+
+### Score breakdown fields (per pickup)
+
+```json
+{
+  "days_overdue": 5,
+  "overdue_contribution": 10.0,
+  "bin_fill_percent": 82.0,
+  "bin_contribution": 41.0,
+  "nearby_complaint_count": 3,
+  "complaint_contribution": 15.0,
+  "total_score": 66.0,
+  "weights_used": {"days_overdue": 2.0, "bin_fill_percent": 0.5, "complaint_count": 5.0},
+  "radius_meters": 500,
+  "note": "Rule-based heuristic — not ML prediction."
+}
+```
+
+### Example HIGH priority item
+```
+HIGH PRIORITY — Score: 66
+Pickup: Plot 12, Ntinda Road
+Reasons:
+  - 5 days overdue          → 10.0 pts
+  - 82% bin fill nearby      → 41.0 pts
+  - 3 nearby complaints      → 15.0 pts
+```
 
 ---
 

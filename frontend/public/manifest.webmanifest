@@ -1,5 +1,6 @@
 {
-  "name": "EcoTrack — Smart Waste Management",
+  "id": "/dashboard",
+  "name": "EcoTrack - Smart Waste Management",
   "short_name": "EcoTrack",
   "description": "Smart waste management and environmental intelligence platform for Uganda.",
   "start_url": "/dashboard",
@@ -8,7 +9,17 @@
   "theme_color": "#1b4332",
   "orientation": "portrait-primary",
   "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }

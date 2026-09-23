@@ -94,5 +94,68 @@ describe("api client", () => {
     const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
     expect(body).toEqual({ waste_category: "PLASTIC", latitude: 0.34, longitude: 32.58 });
     expect(body.address_text).toBeUndefined();
+    expect(body.preferred_date).toBeUndefined();
+    expect(body.preferred_time_window).toBeUndefined();
+  });
+
+  it("sends preferred_date + preferred_time_window in pickup request payload when provided", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: "p2" }),
+    });
+
+    await api.requestPickup("tok", {
+      waste_category: "ORGANIC",
+      latitude: 0.35,
+      longitude: 32.59,
+      address_text: "Plot 12, Ntinda",
+      preferred_date: "2026-10-02",
+      preferred_time_window: "Morning (7:00 – 10:00)",
+      notes: "Gate code is 4321",
+    });
+
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.waste_category).toBe("ORGANIC");
+    expect(body.preferred_date).toBe("2026-10-02");
+    expect(body.preferred_time_window).toBe("Morning (7:00 – 10:00)");
+    expect(body.address_text).toBe("Plot 12, Ntinda");
+    expect(body.notes).toBe("Gate code is 4321");
+  });
+
+  it("sends complaint report payload and parses the ComplaintOut response", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        id: "c1",
+        reporter_user_id: "u-1",
+        category: "ILLEGAL_DUMPING",
+        description: "Debris on Kira Rd",
+        status: "REPORTED",
+        latitude: 0.35,
+        longitude: 32.59,
+        resolution_notes: null,
+        created_at: "2026-09-20T08:00:00Z",
+      }),
+    });
+
+    const created = await api.reportComplaint("tok", {
+      category: "ILLEGAL_DUMPING",
+      description: "Debris on Kira Rd",
+      latitude: 0.35,
+      longitude: 32.59,
+    });
+
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body).toEqual({
+      category: "ILLEGAL_DUMPING",
+      description: "Debris on Kira Rd",
+      latitude: 0.35,
+      longitude: 32.59,
+    });
+    expect(created.id).toBe("c1");
+    expect(created.status).toBe("REPORTED");
+    expect(created.resolution_notes).toBeNull();
   });
 });

@@ -1,8 +1,10 @@
+import json
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from geoalchemy2.functions import (
+    ST_AsGeoJSON,
     ST_Contains,
     ST_MakePoint,
     ST_SetSRID,
@@ -77,9 +79,61 @@ def list_zones(
     return [ZoneOut(id=z.id, name=z.name, waste_company_id=z.waste_company_id, is_active=z.is_active) for z in zones]
 
 
+@router.get("/geojson")
+def zones_geojson(
+    waste_company_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns active collection zones with their PostGIS polygon boundaries
+    as GeoJSON FeatureCollection — suitable for direct use with Leaflet /
+    react-leaflet GeoJSON layer.
+
+    Tenant scoping: COMPANY_ADMIN receives only their company's zones.
+    Other authenticated roles receive all zones (or filtered by waste_company_id).
+    """
+    q = db.query(
+        CollectionZone.id,
+        CollectionZone.name,
+        CollectionZone.waste_company_id,
+        CollectionZone.is_active,
+        ST_AsGeoJSON(CollectionZone.boundary).label("geojson"),
+    ).filter(CollectionZone.is_active.is_(True))
+
+    if current_user.role == UserRole.COMPANY_ADMIN:
+        q = q.filter(CollectionZone.waste_company_id == current_user.waste_company_id)
+    elif waste_company_id:
+        q = q.filter(CollectionZone.waste_company_id == waste_company_id)
+
+    rows = q.all()
+
+    features = []
+    for row in rows:
+        if row.geojson:
+            geometry = json.loads(row.geojson)
+        else:
+            continue
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "id": str(row.id),
+                "name": row.name,
+                "waste_company_id": str(row.waste_company_id),
+                "is_active": row.is_active,
+            },
+            "geometry": geometry,
+        })
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "total": len(features),
+    }
+
+
 @router.get("/lookup", response_model=Optional[ZoneOut])
-def zone_for_point(
-    latitude: float = Query(ge=-90, le=90),
+def zone_for_point(    latitude: float = Query(ge=-90, le=90),
     longitude: float = Query(ge=-180, le=180),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

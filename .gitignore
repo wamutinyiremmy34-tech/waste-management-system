@@ -31,3 +31,17 @@ backend/uploads/
 *.log
 
 postgis-bundle-pg15x64-setup-3.6.2-1.exe
+
+# Local development / AI tooling
+.trae/
+
+# Temporary frontend files
+frontend/tmp/
+
+# Local test/debug output
+eslint_output.txt
+jest_output.txt
+tsc_output.txt
+
+# Temporary test runner
+frontend/_phase4_runner.cjs

@@ -20,6 +20,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Ensure node_modules is always excluded (ESLint 9 default, but explicit
+    // here because some Next.js configs override it unintentionally).
+    "node_modules/**",
   ]),
 ]);
 

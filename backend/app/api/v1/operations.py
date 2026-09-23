@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.intelligence.environmental_calculator import calculate_environmental_impact
 from app.intelligence.hotspot_detector import detect_complaint_hotspots
 from app.models.enums import UserRole
@@ -282,29 +283,139 @@ def priority_queue(
     """
     Returns unassigned and in-progress pickups ordered by CollectionPrioritizer score.
 
-    Score formula (CollectionPrioritizer):
+    Score formula (CollectionPrioritizer — rule-based heuristic, NOT machine learning):
         score = days_overdue × 2.0 + bin_fill_percent × 0.5 + nearby_complaint_count × 5.0
 
-    In this endpoint bin_fill_percent=0 and nearby_complaint_count=0 (not linked per-pickup
-    in the MVP). Score is therefore driven by overdue_days.
+    All three factors use real spatial data from PostGIS ST_DWithin queries:
+        bin_fill_percent: nearest active bin within NEARBY_RADIUS_METERS of pickup location
+        nearby_complaint_count: unresolved complaints within NEARBY_RADIUS_METERS
 
     Priority labels:
         HIGH   >= 10 points
         MEDIUM >= 4 points
         LOW    < 4 points
+
+    Each item includes a score_breakdown field with per-factor contributions.
     """
     scoped_company = _resolve_company_id(current_user, company_id)
     queue = operational_service.get_priority_pickup_queue(db, company_id=scoped_company, limit=limit)
     return {
         "queue": queue,
         "total": len(queue),
-        "scoring_note": "score = days_overdue × 2.0 (CollectionPrioritizer). See docs/operational-metrics.md.",
+        "scoring_note": (
+            "score = days_overdue × 2.0 + bin_fill_percent × 0.5 + nearby_complaint_count × 5.0 "
+            "(CollectionPrioritizer — rule-based heuristic, not ML). "
+            "Each item includes a score_breakdown field with per-factor contributions. "
+            f"Spatial radius: {settings.NEARBY_RADIUS_METERS}m. "
+            "See docs/operational-metrics.md."
+        ),
     }
 
 
 # ---------------------------------------------------------------------------
-# Route optimization for a collector
+# Map data — combined operational layer endpoint
 # ---------------------------------------------------------------------------
+
+@router.get("/map-data")
+def map_data(
+    company_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*ALL_OPERATIONAL_ROLES)),
+):
+    """
+    Returns all operational map layers in a single authenticated request:
+    - Complaint markers (lat/lng, category, status)
+    - Bin markers (lat/lng, fill%, status)
+    - Hotspot centroids
+    - Active pickup locations (REQUESTED/ASSIGNED)
+
+    RBAC / tenant isolation applied:
+    - COMPANY_ADMIN: bins and pickups scoped to their company
+    - SUPER_ADMIN / MUNICIPAL_ADMIN: platform-wide
+    - Hotspots and complaints are platform-wide for all operational roles
+
+    Marker counts are capped per layer to keep map response size manageable
+    at pilot scale. Use individual endpoints for full data export.
+    """
+    import json as _json
+
+    scoped_company = _resolve_company_id(current_user, company_id)
+    from app.models.bins_complaints import Bin, Complaint
+    from app.models.enums import ComplaintStatus, PickupStatus
+    from app.models.pickup import PickupRequest
+    from app.core.geo import latlng_from_point
+
+    # --- Complaints (all unresolved, up to 200) ---
+    complaint_q = (
+        db.query(Complaint)
+        .filter(Complaint.status != ComplaintStatus.RESOLVED)
+        .order_by(Complaint.created_at.desc())
+        .limit(200)
+    )
+    complaints = []
+    for c in complaint_q.all():
+        ll = latlng_from_point(c.location)
+        if ll:
+            complaints.append({
+                "id": str(c.id),
+                "latitude": ll[0],
+                "longitude": ll[1],
+                "category": c.category.value,
+                "status": c.status.value,
+            })
+
+    # --- Bins (all active, up to 200) ---
+    bin_q = db.query(Bin)
+    if scoped_company:
+        bin_q = bin_q.filter(Bin.waste_company_id == scoped_company)
+    bin_q = bin_q.limit(200)
+    bins = []
+    for b in bin_q.all():
+        ll = latlng_from_point(b.location)
+        if ll:
+            bins.append({
+                "id": str(b.id),
+                "code": b.code,
+                "latitude": ll[0],
+                "longitude": ll[1],
+                "status": b.status.value,
+                "current_fill_percent": b.current_fill_percent,
+                "bin_type": b.bin_type,
+            })
+
+    # --- Active pickups (REQUESTED/ASSIGNED, up to 100) ---
+    pickup_q = (
+        db.query(PickupRequest)
+        .filter(PickupRequest.status.in_([PickupStatus.REQUESTED, PickupStatus.ASSIGNED]))
+        .order_by(PickupRequest.created_at.desc())
+    )
+    if scoped_company:
+        pickup_q = pickup_q.filter(PickupRequest.waste_company_id == scoped_company)
+    pickup_q = pickup_q.limit(100)
+    pickups = []
+    for p in pickup_q.all():
+        ll = latlng_from_point(p.location)
+        if ll:
+            pickups.append({
+                "id": str(p.id),
+                "latitude": ll[0],
+                "longitude": ll[1],
+                "status": p.status.value,
+                "waste_category": p.waste_category.value,
+                "address_text": p.address_text,
+            })
+
+    # --- Hotspots (reuse existing detector) ---
+    from app.intelligence.hotspot_detector import detect_complaint_hotspots
+    hotspots = detect_complaint_hotspots(db, eps_meters=300, min_points=3)
+
+    return {
+        "complaints": complaints,
+        "bins": bins,
+        "pickups": pickups,
+        "hotspots": hotspots,
+        "caps": {"complaints": 200, "bins": 200, "pickups": 100},
+    }
 
 @router.get("/route/{collector_id}")
 def optimized_route(

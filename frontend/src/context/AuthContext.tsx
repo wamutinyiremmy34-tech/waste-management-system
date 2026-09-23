@@ -1,13 +1,28 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from "react";
 import { api, API_BASE, UserOut } from "@/lib/api";
+
+const AUTH_TIMEOUT_MS = 15000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(errorMsg)), ms);
+  });
+  try {
+    const result = await Promise.race([promise, timeout]);
+    return result;
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
 
 interface AuthContextValue {
   token: string | null;
   user: UserOut | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<UserOut>;
   logout: () => void;
 }
 
@@ -17,44 +32,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserOut | null>(null);
   const [loading, setLoading] = useState(true);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("ecotrack_token") : null;
     if (!stored) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial auth-check-on-mount has no external-store equivalent here
       setLoading(false);
       return;
     }
-    api
-      .me(stored)
+    let cancelled = false;
+    withTimeout(api.me(stored), AUTH_TIMEOUT_MS, "Auth check timed out")
       .then((me) => {
+        if (cancelled || !mountedRef.current) return;
         setToken(stored);
         setUser(me);
       })
       .catch(() => {
-        localStorage.removeItem("ecotrack_token");
+        if (cancelled || !mountedRef.current) return;
+        try {
+          localStorage.removeItem("ecotrack_token");
+          localStorage.removeItem("ecotrack_refresh_token");
+        } catch {
+          // ignore
+        }
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled && mountedRef.current) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  async function login(email: string, password: string) {
-    const tokens = await api.login(email, password);
+  const login = useCallback(async (email: string, password: string): Promise<UserOut> => {
+    const tokens = await withTimeout(
+      api.login(email, password),
+      AUTH_TIMEOUT_MS,
+      "Login request timed out. Please try again."
+    );
+    if (!mountedRef.current) throw new Error("Component unmounted during login");
     localStorage.setItem("ecotrack_token", tokens.access_token);
     localStorage.setItem("ecotrack_refresh_token", tokens.refresh_token);
     setToken(tokens.access_token);
-    const me = await api.me(tokens.access_token);
-    setUser(me);
-  }
 
-  function logout() {
-    // Revoke the refresh token server-side before clearing local state.
-    // This ensures the 14-day refresh token cannot be reused after logout,
-    // even if it was exfiltrated (e.g. from localStorage). The API call
-    // is fire-and-forget: if it fails (expired token, network error) we
-    // still clear local state — the server-side revocation is defense-in-depth,
-    // not a gate on completing the logout from the user's perspective.
+    const me = await withTimeout(
+      api.me(tokens.access_token),
+      AUTH_TIMEOUT_MS,
+      "User profile load timed out. Please try again."
+    );
+    if (!mountedRef.current) return me;
+    setUser(me);
+    return me;
+  }, []);
+
+  const logout = useCallback(() => {
     const storedRefresh = typeof window !== "undefined" ? localStorage.getItem("ecotrack_refresh_token") : null;
-    if (storedRefresh && token) {
+    const currentToken = token;
+    if (storedRefresh && currentToken) {
       fetch(`${API_BASE}/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -63,11 +106,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Intentionally ignored — local logout proceeds regardless.
       });
     }
-    localStorage.removeItem("ecotrack_token");
-    localStorage.removeItem("ecotrack_refresh_token");
+    try {
+      localStorage.removeItem("ecotrack_token");
+      localStorage.removeItem("ecotrack_refresh_token");
+    } catch {
+      // ignore
+    }
     setToken(null);
     setUser(null);
-  }
+  }, [token]);
 
   return (
     <AuthContext.Provider value={{ token, user, loading, login, logout }}>{children}</AuthContext.Provider>

@@ -1,6 +1,6 @@
 # EcoTrack
 
-**Smart Waste Management & Environmental Intelligence Platform**, built for Oars Technologies,
+**Smart Waste Management & Environmental Intelligence Platform**,
 initially targeting Uganda and designed to extend to other regions.
 
 > **Honest status up front**: this is a genuinely working MVP core — real database, real auth/RBAC,
@@ -55,10 +55,10 @@ sudo -u postgres psql -d ecotrack_test -c "CREATE EXTENSION IF NOT EXISTS postgi
 
 # Backend
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env
-export PYTHONPATH=.
+n export PYTHONPATH=.
 alembic upgrade head
 python3 scripts/seed.py            # optional — realistic demo data for every role
 uvicorn app.main:app --reload      # http://localhost:8000
@@ -325,4 +325,7 @@ This distinction matters (spec section 76) — here it is, stated plainly.
 
 ## License / ownership
 
-Proprietary — Oars Technologies. Not licensed for redistribution.
+Not licensed for redistribution.
+ <p className="mt-6 rounded-md bg-emerald-50 p-3 text-xs text-stone-600">
+          Demo account: <code>citizen@ecotrack.dev</code> / <code>EcoTrackDev123</code> (seed data — see README)
+        </p>

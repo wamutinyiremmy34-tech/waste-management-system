@@ -6,6 +6,25 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { ApiError } from "@/lib/api";
 
+function roleRedirectTarget(role: string): string {
+  switch (role) {
+    case "COLLECTOR":
+      return "/collector";
+    case "SUPER_ADMIN":
+    case "MUNICIPAL_ADMIN":
+      return "/admin";
+    case "COMPANY_ADMIN":
+      return "/company";
+    case "ORGANIZATION_ADMIN":
+      return "/organization";
+    case "RECYCLER":
+      return "/recycler";
+    case "CITIZEN":
+    default:
+      return "/dashboard";
+  }
+}
+
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
@@ -19,10 +38,11 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await login(email, password);
-      router.push("/post-login");
+      const user = await login(email, password);
+      const target = roleRedirectTarget(user.role);
+      router.replace(target);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -67,9 +87,6 @@ export default function LoginPage() {
           <Link href="/register" className="font-medium text-[#2d6a4f]">
             Register
           </Link>
-        </p>
-        <p className="mt-6 rounded-md bg-emerald-50 p-3 text-xs text-stone-600">
-          Demo account: <code>citizen@ecotrack.dev</code> / <code>EcoTrackDev123</code> (seed data — see README)
         </p>
       </div>
     </main>
