@@ -14,7 +14,13 @@ done
 echo "Database is up."
 
 echo "Running migrations..."
-alembic upgrade head
+# Use MIGRATION_DATABASE_URL (privileged ecotrack_owner) when set;
+# otherwise fall back to DATABASE_URL (safe for local dev).
+if [ -n "$MIGRATION_DATABASE_URL" ]; then
+  MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" alembic upgrade head
+else
+  alembic upgrade head
+fi
 
 if [ "$SEED_ON_START" = "true" ]; then
   echo "Seeding demo data..."

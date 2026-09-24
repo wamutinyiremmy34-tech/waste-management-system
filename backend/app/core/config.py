@@ -30,9 +30,20 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # --- Database ---
+    # APPLICATION connection — must use the restricted `ecotrack_app` role in
+    # production (NOSUPERUSER, NOBYPASSRLS).  In local development the default
+    # superuser connection is fine.
     DATABASE_URL: str = Field(
         default="postgresql+psycopg2://ecotrack:ecotrack_dev_pw@localhost:5432/ecotrack_dev"
     )
+
+    # MIGRATION connection — must use the privileged `ecotrack_owner` role so
+    # that Alembic can CREATE/ALTER/DROP tables and manage RLS objects.
+    # When not set, Alembic falls back to DATABASE_URL (safe for local dev
+    # where both roles are typically the same superuser connection).
+    # NEVER set this to the ecotrack_app credentials — migrations require DDL
+    # privileges that the app role intentionally does not have.
+    MIGRATION_DATABASE_URL: str | None = Field(default=None)
 
     # --- Redis ---
     REDIS_URL: str = Field(default="redis://localhost:6379/0")

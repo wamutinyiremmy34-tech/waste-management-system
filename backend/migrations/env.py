@@ -18,9 +18,12 @@ import app.models  # noqa: F401  (ensures every model is registered on Base.meta
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
+config = context.config
+# Use MIGRATION_DATABASE_URL when available (privileged ecotrack_owner role);
+# fall back to DATABASE_URL for local development where both are the same.
+_migration_url = settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
+config.set_main_option("sqlalchemy.url", _migration_url)
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
